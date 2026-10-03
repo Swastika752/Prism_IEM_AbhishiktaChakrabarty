@@ -1,0 +1,1250 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ConvoLens</title>
+    <link rel="stylesheet" href="style.css" class="css">
+
+</head>
+
+<body>
+
+    <header>
+        <h1> ConvoLens</h1>
+        <p>Real-Time Communication Gap Detector</p>
+    </header>
+
+    <div class="app">
+
+        <!-- LEFT SIDEBAR -->
+
+        <aside class="sidebar">
+            <h3>👥 Participants</h3>
+
+            <div class="participant">🙋 Alice</div>
+            <div class="participant">👨 Bob</div>
+            <div class="participant">🙋 Charlie</div>
+            <div class="participant">👨 David</div>
+
+            <hr>
+
+            <button class="demo" id="demoBtn">📋 Demo Conversation</button>
+            <button class="reset secondary" id="resetBtn">🔄 Reset</button>
+
+            <p style="font-size:11px;color:#64748b;margin-top:18px">
+                Conversations are stored temporarily in this browser session.
+            </p>
+        </aside>
+
+        <!-- CENTER CHAT -->
+
+        <main class="chat-area">
+
+            <div class="chat-messages" id="chatMessages">
+                <div style="text-align:center;color:#64748b;margin-top:100px">
+                    <h3>Welcome to ConvoLens</h3>
+                    <p>Start a group conversation to detect communication gaps.</p>
+                </div>
+            </div>
+
+            <div class="composer">
+
+                <select id="speaker">
+                    <option>Alice</option>
+                    <option>Bob</option>
+                    <option>Charlie</option>
+                    <option>David</option>
+                </select>
+
+                <input id="messageInput" placeholder="Type a message..." autocomplete="off">
+
+                <button id="sendBtn">SEND</button>
+
+            </div>
+
+            <section class="dashboard">
+
+                <h3>📊 Communication Health</h3>
+
+                <div class="stats">
+                    <div class="stat">
+                        <strong id="totalMessages">0</strong>
+                        <span>Messages</span>
+                    </div>
+
+                    <div class="stat">
+                        <strong id="answeredCount">0</strong>
+                        <span>Answered</span>
+                    </div>
+
+                    <div class="stat">
+                        <strong id="unresolvedCount">0</strong>
+                        <span>Unresolved</span>
+                    </div>
+
+                    <div class="stat">
+                        <strong id="partialCount">0</strong>
+                        <span>Partial</span>
+                    </div>
+
+                    <div class="stat">
+                        <strong id="repeatedCount">0</strong>
+                        <span>Repeated</span>
+                    </div>
+
+                    <div class="stat">
+                        <strong id="clarificationCount">0</strong>
+                        <span>Clarification</span>
+                    </div>
+
+                    <div class="stat">
+                        <strong id="delayedCount">0</strong>
+                        <span>Delayed</span>
+                    </div>
+
+                    <div class="stat">
+                        <strong id="contradictionCount">0</strong>
+                        <span>Contradictions</span>
+                    </div>
+                </div>
+
+            </section>
+        </main>
+
+        <!-- RIGHT AI MONITOR -->
+
+        <aside class="monitor">
+
+            <h2>🤖 AI Monitor</h2>
+
+            <div class="model-status" id="modelStatus">
+                Loading semantic AI model...
+            </div>
+
+            <div id="issues">
+                <p style="color:#64748b;font-size:13px">
+                    No communication interactions detected yet.
+                </p>
+            </div>
+
+        </aside>
+
+    </div>
+
+    <script type="module">
+
+        import { pipeline } from
+            "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2";
+
+
+        // ===========================================
+        // 1. APPLICATION STATE
+        // ===========================================
+
+        const messages = [];
+        const issues = [];
+
+        let issueCounter = 0;
+        let embeddingModel = null;
+        let modelReady = false;
+        let busy = false;
+
+        const participants = ["Alice", "Bob", "Charlie", "David"];
+
+        const $ = id => document.getElementById(id);
+
+
+        // ===========================================
+        // 2. LOAD SEMANTIC MODEL
+        // ===========================================
+
+        async function loadModel() {
+
+            try {
+
+                $("modelStatus").textContent =
+                    "Downloading semantic AI model...";
+
+                embeddingModel = await pipeline(
+                    "feature-extraction",
+                    "Xenova/all-MiniLM-L6-v2"
+                );
+
+                modelReady = true;
+
+                $("modelStatus").textContent =
+                    "🟢 Semantic AI ready";
+
+            }
+            catch (error) {
+
+                console.error(error);
+
+                $("modelStatus").textContent =
+                    "⚠ Semantic model unavailable. Using contextual rules.";
+
+            }
+
+        }
+
+        loadModel();
+
+
+        // ===========================================
+        // 3. EMBEDDING AND SIMILARITY
+        // ===========================================
+
+        const embeddingCache = new Map();
+
+        async function getEmbedding(text) {
+
+            if (!modelReady) return null;
+
+            const key = text.toLowerCase().trim();
+
+            if (embeddingCache.has(key)) {
+                return embeddingCache.get(key);
+            }
+
+            const result = await embeddingModel(key, {
+                pooling: "mean",
+                normalize: true
+            });
+
+            const vector = Array.from(result.data);
+
+            embeddingCache.set(key, vector);
+
+            return vector;
+        }
+
+
+        async function semanticSimilarity(a, b) {
+
+            const va = await getEmbedding(a);
+            const vb = await getEmbedding(b);
+
+            if (!va || !vb) return null;
+
+            let score = 0;
+
+            for (let i = 0; i < va.length; i++) {
+                score += va[i] * vb[i];
+            }
+
+            return score;
+        }
+
+
+        // ===========================================
+        // 4. MESSAGE TYPE DETECTION
+        // ===========================================
+
+        function detectType(text) {
+
+            const t = text.toLowerCase();
+
+            const requestPatterns = [
+                "can you send",
+                "please send",
+                "send me",
+                "can someone",
+                "could you",
+                "please share",
+                "please upload",
+                "i need",
+                "can you provide",
+                "please provide",
+                "let me know",
+                "please check"
+            ];
+
+            if (requestPatterns.some(x => t.includes(x))) {
+                return "REQUEST";
+            }
+
+            if (
+                t.includes("?") ||
+                /^(when|where|who|what|why|how|which)\b/.test(t)
+            ) {
+                return "QUESTION";
+            }
+
+            return "MESSAGE";
+        }
+
+
+        // ===========================================
+        // 5. HELPER FUNCTIONS
+        // ===========================================
+
+        function isClarification(text) {
+
+            const t = text.toLowerCase();
+
+            const patterns = [
+                "which one",
+                "which document",
+                "which section",
+                "what do you mean",
+                "please clarify",
+                "can you clarify",
+                "what exactly",
+                "could you explain",
+                "which file",
+                "which part"
+            ];
+
+            return patterns.some(x => t.includes(x));
+        }
+
+
+        function isNegative(text) {
+
+            const t = text.toLowerCase();
+
+            return [
+                "i don't know",
+                "i do not know",
+                "not sure",
+                "no idea",
+                "i cannot",
+                "i can't",
+                "not yet",
+                "haven't done",
+                "have not done"
+            ].some(x => t.includes(x));
+        }
+
+
+        function hasCommitment(text) {
+
+            const t = text.toLowerCase();
+
+            return [
+                "sure",
+                "of course",
+                "no problem",
+                "i'll",
+                "i will",
+                "we will",
+                "we'll",
+                "will do",
+                "i can",
+                "i have sent",
+                "already sent",
+                "sent it",
+                "uploaded",
+                "shared",
+                "completed",
+                "done",
+                "finished",
+                "i've shared",
+                "i've sent"
+            ].some(x => t.includes(x));
+        }
+
+
+        function hasCompletion(text) {
+
+            const t = text.toLowerCase();
+
+            return [
+                "already sent",
+                "i have sent",
+                "sent it",
+                "uploaded",
+                "shared it",
+                "completed",
+                "done",
+                "finished",
+                "i've shared",
+                "i've sent"
+            ].some(x => t.includes(x));
+        }
+
+
+        function detectParts(question, response) {
+
+            const q = question.toLowerCase();
+            const r = response.toLowerCase();
+
+            const timeQuestion =
+                q.includes("when") ||
+                q.includes("what time");
+
+            const locationQuestion =
+                q.includes("where") ||
+                q.includes("location");
+
+            if (!timeQuestion || !locationQuestion) {
+                return null;
+            }
+
+            const hasTime =
+                /\b\d{1,2}(:\d{2})?\s*(am|pm)\b/i.test(r) ||
+                /\b(tomorrow|today|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(r);
+
+            const hasLocation =
+                /\b(room|hall|lab|classroom|online|zoom|auditorium|building|office|library)\b/i.test(r);
+
+            return {
+                time: hasTime,
+                location: hasLocation
+            };
+        }
+
+
+        function extractTime(text) {
+
+            const match = text.match(
+                /\b(\d{1,2}(?::\d{2})?\s*(?:am|pm)|tomorrow|today|tonight)\b/i
+            );
+
+            return match ? match[0].toLowerCase().replace(/\s/g, "") : null;
+        }
+
+
+        function addEvidence(issue, message) {
+
+            const exists = issue.evidence.some(
+                e => e.messageId === message.id
+            );
+
+            if (!exists) {
+
+                issue.evidence.push({
+                    messageId: message.id,
+                    speaker: message.speaker,
+                    text: message.text,
+                    time: message.time
+                });
+
+            }
+        }
+
+
+        // ===========================================
+        // 6. MAIN COMMUNICATION ENGINE
+        // ===========================================
+
+        async function analyzeMessage(message) {
+
+            const text = message.text.toLowerCase();
+
+            const type = message.type;
+
+
+            // ---------------------------------------
+            // A. NEW QUESTIONS AND REQUESTS
+            // ---------------------------------------
+
+            if (type === "QUESTION" || type === "REQUEST") {
+
+                let repeatedIssue = null;
+
+                for (const issue of issues) {
+
+                    if (issue.speaker !== message.speaker) continue;
+
+                    if (issue.status === "ANSWERED") continue;
+
+                    const similarity = await semanticSimilarity(
+                        issue.question,
+                        message.text
+                    );
+
+                    if (similarity !== null && similarity >= 0.72) {
+
+                        repeatedIssue = issue;
+                        break;
+
+                    }
+
+                }
+
+                if (repeatedIssue) {
+
+                    repeatedIssue.status = "REPEATED REQUEST";
+
+                    repeatedIssue.repeatedCount++;
+
+                    addEvidence(repeatedIssue, message);
+
+                    repeatedIssue.confidence = 90;
+
+                }
+                else {
+
+                    issueCounter++;
+
+                    issues.push({
+
+                        id: issueCounter,
+
+                        speaker: message.speaker,
+
+                        question: message.text,
+
+                        type: type,
+
+                        status: "UNRESOLVED",
+
+                        evidence: [],
+
+                        confidence: 75,
+
+                        repeatedCount: 0,
+
+                        createdAt: Date.now(),
+
+                        messageId: message.id,
+
+                        resolutionType: null
+
+                    });
+
+                }
+
+            }
+
+
+            // ---------------------------------------
+            // B. MATCH MESSAGE WITH OLD INTERACTIONS
+            // ---------------------------------------
+
+            for (const issue of issues) {
+
+                if (issue.messageId === message.id) continue;
+
+                if (issue.speaker === message.speaker) continue;
+
+                if (issue.status === "ANSWERED") continue;
+
+                if (issue.status === "CONTRADICTORY") continue;
+
+
+                // Clarification detection
+
+                if (isClarification(text)) {
+
+                    const score = await semanticSimilarity(
+                        issue.question,
+                        message.text
+                    );
+
+                    if (score !== null && score >= 0.15) {
+
+                        issue.status = "REPEATED CLARIFICATION";
+
+                        issue.confidence = 85;
+
+                        addEvidence(issue, message);
+
+                        continue;
+
+                    }
+
+                }
+
+
+                // Negative responses should not resolve requests
+
+                if (isNegative(text)) {
+
+                    const score = await semanticSimilarity(
+                        issue.question,
+                        message.text
+                    );
+
+                    if (score !== null && score >= 0.12) {
+
+                        issue.status = "UNRESOLVED";
+
+                        addEvidence(issue, message);
+
+                    }
+
+                    continue;
+
+                }
+
+
+                // -----------------------------------
+                // SEMANTIC MATCHING
+                // -----------------------------------
+
+                const score = await semanticSimilarity(
+                    issue.question,
+                    message.text
+                );
+
+                if (score === null) continue;
+
+
+                // Contextual response patterns
+
+                const commitment = hasCommitment(text);
+
+                const completion = hasCompletion(text);
+
+                const isQuestion =
+                    message.type === "QUESTION";
+
+
+                // A commitment is not automatically
+                // proof that the task was completed.
+
+                const request = issue.type === "REQUEST";
+
+                const question = issue.type === "QUESTION";
+
+
+                // Semantic similarity thresholds are
+                // heuristic starting values.
+
+                let relevant = false;
+
+                if (score >= 0.48 && !isQuestion) {
+                    relevant = true;
+                }
+
+                // Indirect request response:
+                // "Can you send the assignment?"
+                // "Sure, I'll share it tonight."
+
+                if (
+                    request &&
+                    commitment &&
+                    score >= 0.15 &&
+                    !isQuestion
+                ) {
+                    relevant = true;
+                }
+
+                // Avoid treating a generic acknowledgement
+                // as a complete answer.
+
+                if (
+                    ["ok", "okay", "yes", "yeah", "fine"].includes(text.trim())
+                ) {
+                    relevant = false;
+                }
+
+                if (!relevant) continue;
+
+
+                // -----------------------------------
+                // CONTRADICTION DETECTION
+                // -----------------------------------
+
+                if (question) {
+
+                    const previousEvidence = issue.evidence;
+
+                    for (const old of previousEvidence) {
+
+                        const oldTime = extractTime(old.text);
+
+                        const newTime = extractTime(message.text);
+
+                        if (
+                            oldTime &&
+                            newTime &&
+                            oldTime !== newTime
+                        ) {
+
+                            issue.status = "CONTRADICTORY";
+
+                            addEvidence(issue, message);
+
+                            issue.confidence = 90;
+
+                            relevant = false;
+
+                            break;
+
+                        }
+
+                    }
+
+                    if (issue.status === "CONTRADICTORY") {
+                        continue;
+                    }
+
+                }
+
+
+                // -----------------------------------
+                // PARTIAL ANSWER DETECTION
+                // -----------------------------------
+
+                const parts = detectParts(
+                    issue.question,
+                    message.text
+                );
+
+                if (parts) {
+
+                    if (parts.time && parts.location) {
+
+                        issue.status = "ANSWERED";
+
+                        issue.resolutionType = "Complete answer";
+
+                    }
+                    else {
+
+                        issue.status = "PARTIALLY ANSWERED";
+
+                        issue.resolutionType = "Incomplete answer";
+
+                    }
+
+                    issue.parts = parts;
+
+                    addEvidence(issue, message);
+
+                    issue.confidence = 88;
+
+                    continue;
+
+                }
+
+
+                // -----------------------------------
+                // ANSWER / COMMITMENT CLASSIFICATION
+                // -----------------------------------
+
+                if (request) {
+
+                    if (commitment) {
+
+                        if (completion) {
+
+                            issue.status = "ANSWERED";
+
+                            issue.resolutionType = "Completed";
+
+                        }
+                        else {
+
+                            issue.status = "ANSWERED";
+
+                            issue.resolutionType = "Commitment received";
+
+                        }
+
+                    }
+                    else {
+
+                        issue.status = "ANSWERED";
+
+                    }
+
+                }
+                else {
+
+                    issue.status = "ANSWERED";
+
+                }
+
+                addEvidence(issue, message);
+
+                issue.confidence = Math.min(
+                    97,
+                    Math.round(70 + score * 35)
+                );
+
+            }
+
+        }
+
+
+        // ===========================================
+        // 7. SEND MESSAGE
+        // ===========================================
+
+        async function sendMessage() {
+
+            if (busy) return;
+
+            const input = $("messageInput");
+
+            const text = input.value.trim();
+
+            if (!text) return;
+
+            const speaker = $("speaker").value;
+
+            const message = {
+
+                id: Date.now() + Math.random(),
+
+                speaker: speaker,
+
+                text: text,
+
+                type: detectType(text),
+
+                time: new Date().toLocaleTimeString()
+
+            };
+
+            messages.push(message);
+
+            input.value = "";
+
+            renderChat();
+
+            busy = true;
+
+            $("sendBtn").disabled = true;
+
+            $("modelStatus").textContent =
+                modelReady
+                    ? "🤖 Analyzing message..."
+                    : "⚠ Semantic model unavailable; using rules where possible.";
+
+            try {
+
+                await analyzeMessage(message);
+
+                renderIssues();
+
+                updateDashboard();
+
+            }
+            catch (error) {
+
+                console.error(error);
+
+                $("modelStatus").textContent =
+                    "Analysis error. Check browser console.";
+
+            }
+            finally {
+
+                busy = false;
+
+                $("sendBtn").disabled = false;
+
+                $("modelStatus").textContent =
+                    modelReady
+                        ? "🟢 Semantic AI ready"
+                        : "⚠ Rule-based fallback";
+
+            }
+
+        }
+
+
+        // ===========================================
+        // 8. RENDER CHAT
+        // ===========================================
+
+        function renderChat() {
+
+            const container = $("chatMessages");
+
+            container.innerHTML = "";
+
+            if (messages.length === 0) {
+
+                container.innerHTML = `
+        <div style="text-align:center;color:#64748b;margin-top:100px">
+        <h3>Welcome to ConvoLens</h3>
+        <p>Start a group conversation to detect communication gaps.</p>
+        </div>`;
+
+                return;
+
+            }
+
+            messages.forEach(message => {
+
+                const mine = message.speaker === $("speaker").value;
+
+                const div = document.createElement("div");
+
+                div.className = "message " + (mine ? "mine" : "");
+
+                const sender = document.createElement("div");
+
+                sender.className = "sender";
+
+                sender.textContent = message.speaker;
+
+                const bubble = document.createElement("div");
+
+                bubble.className = "bubble";
+
+                bubble.textContent = message.text;
+
+                const time = document.createElement("div");
+
+                time.className = "timestamp";
+
+                time.textContent = message.time;
+
+                div.append(sender, bubble, time);
+
+                container.appendChild(div);
+
+            });
+
+            container.scrollTop = container.scrollHeight;
+
+        }
+
+
+        // ===========================================
+        // 9. RENDER AI MONITOR
+        // ===========================================
+
+        function renderIssues() {
+
+            const container = $("issues");
+
+            container.innerHTML = "";
+
+            if (issues.length === 0) {
+
+                container.innerHTML = `
+        <p style="color:#64748b;font-size:13px">
+        No communication interactions detected yet.
+        </p>`;
+
+                return;
+
+            }
+
+            const sorted = [...issues].reverse();
+
+            sorted.forEach(issue => {
+
+                const card = document.createElement("div");
+
+                const status = issue.status;
+
+                let icon = "🟡";
+
+                let className = "";
+
+                if (status === "ANSWERED") {
+                    icon = "🟢";
+                    className = "answered";
+                }
+                else if (status === "PARTIALLY ANSWERED") {
+                    icon = "🟠";
+                    className = "partial";
+                }
+                else if (status === "DELAYED") {
+                    icon = "🟠";
+                    className = "delayed";
+                }
+                else if (status === "REPEATED REQUEST") {
+                    icon = "🔁";
+                    className = "repeated";
+                }
+                else if (status === "REPEATED CLARIFICATION") {
+                    icon = "🔄";
+                    className = "clarification";
+                }
+                else if (status === "CONTRADICTORY") {
+                    icon = "🔴";
+                    className = "contradictory";
+                }
+
+                card.className = "issue " + className;
+
+                const heading = document.createElement("div");
+
+                heading.className = "status";
+
+                heading.textContent = icon + " " + status;
+
+                const owner = document.createElement("strong");
+
+                owner.textContent = issue.speaker;
+
+                const question = document.createElement("p");
+
+                question.textContent = issue.question;
+
+                const confidence = document.createElement("div");
+
+                confidence.className = "confidence";
+
+                confidence.textContent =
+                    "AI Confidence: " + issue.confidence + "%";
+
+                card.append(heading, owner, question);
+
+                // Partial answer breakdown
+
+                if (issue.parts) {
+
+                    const breakdown = document.createElement("div");
+
+                    breakdown.className = "evidence";
+
+                    breakdown.textContent =
+                        (issue.parts.time ? "✓" : "✗") +
+                        " Time | " +
+                        (issue.parts.location ? "✓" : "✗") +
+                        " Location";
+
+                    card.appendChild(breakdown);
+
+                }
+
+                // Evidence
+
+                issue.evidence.forEach(e => {
+
+                    const evidence = document.createElement("div");
+
+                    evidence.className = "evidence";
+
+                    evidence.textContent =
+                        e.speaker + ": " + e.text;
+
+                    card.appendChild(evidence);
+
+                });
+
+                if (issue.resolutionType) {
+
+                    const resolution = document.createElement("div");
+
+                    resolution.className = "confidence";
+
+                    resolution.textContent =
+                        "Resolution: " + issue.resolutionType;
+
+                    card.appendChild(resolution);
+
+                }
+
+                // Neutral follow-up suggestion
+
+                if (
+                    status === "UNRESOLVED" ||
+                    status === "DELAYED" ||
+                    status === "PARTIALLY ANSWERED"
+                ) {
+
+                    const suggestion = document.createElement("div");
+
+                    suggestion.className = "suggestion";
+
+                    suggestion.textContent =
+                        "Suggested follow-up: Could someone please provide an update on this?";
+
+                    card.appendChild(suggestion);
+
+                }
+
+                container.appendChild(card);
+
+            });
+
+        }
+
+
+        // ===========================================
+        // 10. DASHBOARD
+        // ===========================================
+
+        function updateDashboard() {
+
+            const count = status =>
+                issues.filter(x => x.status === status).length;
+
+            $("totalMessages").textContent = messages.length;
+
+            $("answeredCount").textContent = count("ANSWERED");
+
+            $("unresolvedCount").textContent = count("UNRESOLVED");
+
+            $("partialCount").textContent = count("PARTIALLY ANSWERED");
+
+            $("repeatedCount").textContent = count("REPEATED REQUEST");
+
+            $("clarificationCount").textContent =
+                count("REPEATED CLARIFICATION");
+
+            $("delayedCount").textContent = count("DELAYED");
+
+            $("contradictionCount").textContent = count("CONTRADICTORY");
+
+        }
+
+
+        // ===========================================
+        // 11. DELAY DETECTION
+        // ===========================================
+
+        const DELAY_THRESHOLD_MS = 2 * 60 * 1000;
+
+        setInterval(() => {
+
+            let changed = false;
+
+            issues.forEach(issue => {
+
+                if (
+                    issue.status === "UNRESOLVED" &&
+                    Date.now() - issue.createdAt >= DELAY_THRESHOLD_MS
+                ) {
+
+                    issue.status = "DELAYED";
+
+                    changed = true;
+
+                }
+
+            });
+
+            if (changed) {
+
+                renderIssues();
+
+                updateDashboard();
+
+            }
+
+        }, 5000);
+
+
+        // ===========================================
+        // 12. RESET
+        // ===========================================
+
+        function resetConversation() {
+
+            messages.length = 0;
+
+            issues.length = 0;
+
+            issueCounter = 0;
+
+            renderChat();
+
+            renderIssues();
+
+            updateDashboard();
+
+        }
+
+
+        // ===========================================
+        // 13. DEMO CONVERSATION
+        // ===========================================
+
+        async function loadDemo() {
+
+            resetConversation();
+
+            const demo = [
+
+                ["Alice", "Can you send me the project report?"],
+
+                ["Bob", "I am working on the presentation."],
+
+                ["Charlie", "When is the meeting and where is it?"],
+
+                ["Alice", "Can someone please send me the project report?"],
+
+                ["David", "I will upload the report tonight."],
+
+                ["Bob", "The meeting is tomorrow at 10 AM."],
+
+                ["Charlie", "Actually, the meeting is at 2 PM."],
+
+                ["Alice", "Please update the project document."],
+
+                ["Bob", "Which section should I update?"],
+
+                ["Alice", "The introduction section."]
+
+            ];
+
+            busy = true;
+
+            $("sendBtn").disabled = true;
+
+            for (const [speaker, text] of demo) {
+
+                const message = {
+
+                    id: Date.now() + Math.random(),
+
+                    speaker: speaker,
+
+                    text: text,
+
+                    type: detectType(text),
+
+                    time: new Date().toLocaleTimeString()
+
+                };
+
+                messages.push(message);
+
+                renderChat();
+
+                await analyzeMessage(message);
+
+                renderIssues();
+
+                updateDashboard();
+
+            }
+
+            busy = false;
+
+            $("sendBtn").disabled = false;
+
+            $("modelStatus").textContent =
+                modelReady ? "🟢 Semantic AI ready" : "⚠ Rule-based fallback";
+
+        }
+
+
+        // ===========================================
+        // 14. EVENT LISTENERS
+        // ===========================================
+
+        $("sendBtn").addEventListener("click", sendMessage);
+
+        $("messageInput").addEventListener("keydown", e => {
+
+            if (e.key === "Enter") {
+                sendMessage();
+            }
+
+        });
+
+        $("resetBtn").addEventListener(
+            "click", resetConversation
+        );
+
+        $("demoBtn").addEventListener(
+            "click", loadDemo
+        );
+
+        $("speaker").addEventListener(
+            "change", renderChat
+        );
+
+        updateDashboard();
+
+    </script>
+
+</body>
+
+</html>
